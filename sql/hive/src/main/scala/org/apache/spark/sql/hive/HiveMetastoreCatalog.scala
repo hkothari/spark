@@ -173,7 +173,8 @@ private[hive] class HiveMetastoreCatalog(sparkSession: SparkSession) extends Log
             dataSchema = dataSchema,
             bucketSpec = None,
             fileFormat = fileFormat,
-            options = options)(sparkSession = sparkSession)
+            options = options,
+            dataStatistics = None)(sparkSession = sparkSession)
           val created = LogicalRelation(fsRelation, updatedTable)
           catalogProxy.cacheTable(tableIdentifier, created)
           created

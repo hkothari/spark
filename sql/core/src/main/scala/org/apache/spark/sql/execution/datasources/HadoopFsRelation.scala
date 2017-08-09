@@ -18,11 +18,11 @@
 package org.apache.spark.sql.execution.datasources
 
 import scala.collection.mutable
-
-import org.apache.spark.sql.{SparkSession, SQLContext}
+import org.apache.spark.sql.{SQLContext, SparkSession}
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
+import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.execution.FileRelation
-import org.apache.spark.sql.sources.{BaseRelation, DataSourceRegister}
+import org.apache.spark.sql.sources.{BaseRelation, DataSourceRegister, RelationStatistics}
 import org.apache.spark.sql.types.{StructField, StructType}
 
 
@@ -45,7 +45,8 @@ case class HadoopFsRelation(
     dataSchema: StructType,
     bucketSpec: Option[BucketSpec],
     fileFormat: FileFormat,
-    options: Map[String, String])(val sparkSession: SparkSession)
+    options: Map[String, String],
+    dataStatistics: Option[RelationStatistics])(val sparkSession: SparkSession)
   extends BaseRelation with FileRelation {
 
   override def sqlContext: SQLContext = sparkSession.sqlContext
@@ -73,7 +74,10 @@ case class HadoopFsRelation(
     }
   }
 
-  override def sizeInBytes: Long = location.sizeInBytes
+  override def sizeInBytes: Long = dataStatistics.map(_.sizeInBytes.toLong)
+    .getOrElse(location.sizeInBytes)
+
+  override def statistics: RelationStatistics = dataStatistics.getOrElse(super.statistics)
 
   override def inputFiles: Array[String] = location.inputFiles
 }

@@ -34,6 +34,7 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
               _,
               _,
               _,
+              _,
               _),
             _,
             _))

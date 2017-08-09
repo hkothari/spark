@@ -49,9 +49,8 @@ case class LogicalRelation(
     catalogTable = None)
 
   override def computeStats(): Statistics = {
-    catalogTable
-      .flatMap(_.stats.map(_.toPlanStats(output)))
-      .getOrElse(Statistics(sizeInBytes = relation.sizeInBytes))
+    catalogTable.flatMap(_.stats.map(_.toPlanStats(output)))
+      .getOrElse(relation.statistics.toPlanStats(output))
   }
 
   /** Used to lookup original attribute capitalization */

@@ -81,6 +81,15 @@ private[sql] trait ParquetTest extends SQLTestUtils {
     withParquetFile(data)(path => readParquetFile(path.toString, testVectorized)(f))
   }
 
+  protected def withParquetDataFrame(dataFrame: DataFrame)
+                                    (f: DataFrame => Unit): Unit = {
+    // TODO fix me better abstraction
+    withTempPath { file =>
+      dataFrame.write.parquet(file.getCanonicalPath)
+      readParquetFile(file.getCanonicalPath)(f)
+    }
+  }
+
   /**
    * Writes `data` to a Parquet file, reads it back as a [[DataFrame]] and registers it as a
    * temporary table named `tableName`, then call `f`. The temporary table together with the

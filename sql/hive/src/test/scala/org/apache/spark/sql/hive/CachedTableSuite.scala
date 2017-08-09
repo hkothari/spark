@@ -327,7 +327,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils with TestHiveSingleto
         dataSchema = dataSchema,
         bucketSpec = None,
         fileFormat = new ParquetFileFormat(),
-        options = Map.empty)(sparkSession = spark)
+        options = Map.empty,
+        dataStatistics = None)(sparkSession = spark)
 
       val plan = LogicalRelation(relation, tableMeta)
       spark.sharedState.cacheManager.cacheQuery(Dataset.ofRows(spark, plan))
@@ -341,7 +342,8 @@ class CachedTableSuite extends QueryTest with SQLTestUtils with TestHiveSingleto
         dataSchema = dataSchema,
         bucketSpec = None,
         fileFormat = new ParquetFileFormat(),
-        options = Map.empty)(sparkSession = spark)
+        options = Map.empty,
+        dataStatistics = None)(sparkSession = spark)
       val samePlan = LogicalRelation(sameRelation, tableMeta)
 
       assert(spark.sharedState.cacheManager.lookupCachedData(samePlan).isDefined)

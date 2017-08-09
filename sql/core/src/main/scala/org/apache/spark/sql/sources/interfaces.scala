@@ -22,6 +22,8 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.plans.logical.{ColumnStat, Statistics}
+import org.apache.spark.sql.catalyst.plans.logical.statsEstimation.ColumnStatsMap
 import org.apache.spark.sql.execution.streaming.{Sink, Source}
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.StructType
@@ -180,6 +182,23 @@ trait CreatableRelationProvider {
       data: DataFrame): BaseRelation
 }
 
+case class RelationStatistics(
+                              sizeInBytes: BigInt,
+                              rowCount: Option[BigInt] = None,
+                              colStats: Map[String, ColumnStat] = Map.empty) {
+  def toPlanStats(planOutput: Seq[Attribute]): Statistics = {
+    val matched = planOutput.flatMap(a => colStats.get(a.name).map(a -> _))
+    Statistics(sizeInBytes = sizeInBytes, rowCount = rowCount,
+      attributeStats = AttributeMap(matched))
+  }
+
+  /** Readable string representation for the CatalogStatistics. */
+  def simpleString: String = {
+    val rowCountString = if (rowCount.isDefined) s", ${rowCount.get} rows" else ""
+    s"$sizeInBytes bytes$rowCountString"
+  }
+}
+
 /**
  * Represents a collection of tuples with a known schema. Classes that extend BaseRelation must
  * be able to produce the schema of their data in the form of a `StructType`. Concrete
@@ -210,6 +229,8 @@ abstract class BaseRelation {
    * @since 1.3.0
    */
   def sizeInBytes: Long = sqlContext.conf.defaultSizeInBytes
+
+  def statistics: RelationStatistics = RelationStatistics(sizeInBytes = sizeInBytes)
 
   /**
    * Whether does it need to convert the objects in Row to internal representation, for example:

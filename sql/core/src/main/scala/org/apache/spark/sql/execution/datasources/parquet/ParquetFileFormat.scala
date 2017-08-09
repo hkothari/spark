@@ -25,7 +25,6 @@ import scala.collection.mutable
 import scala.collection.parallel.ForkJoinTaskSupport
 import scala.concurrent.forkjoin.ForkJoinPool
 import scala.util.{Failure, Try}
-
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileStatus, Path}
 import org.apache.hadoop.mapreduce._
@@ -33,12 +32,11 @@ import org.apache.hadoop.mapreduce.lib.input.FileSplit
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.parquet.filter2.compat.FilterCompat
 import org.apache.parquet.filter2.predicate.FilterApi
-import org.apache.parquet.format.converter.ParquetMetadataConverter.SKIP_ROW_GROUPS
+import org.apache.parquet.format.converter.ParquetMetadataConverter.NO_FILTER
 import org.apache.parquet.hadoop._
 import org.apache.parquet.hadoop.codec.CodecConfig
 import org.apache.parquet.hadoop.util.ContextUtil
 import org.apache.parquet.schema.MessageType
-
 import org.apache.spark.{SparkException, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
@@ -46,6 +44,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.GenerateUnsafeProjection
 import org.apache.spark.sql.catalyst.parser.LegacyTypeStringParser
+import org.apache.spark.sql.catalyst.plans.logical.ColumnStat
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources._
@@ -157,10 +156,16 @@ class ParquetFileFormat
     }
   }
 
-  override def inferSchema(
+  override def inferSchema(sparkSession: SparkSession,
+                           options: Map[String, String],
+                           files: Seq[FileStatus]): Option[StructType] = {
+    inferSchemaWithStatistics(sparkSession, options, files)._1
+  }
+
+  override def inferSchemaWithStatistics(
       sparkSession: SparkSession,
       parameters: Map[String, String],
-      files: Seq[FileStatus]): Option[StructType] = {
+      files: Seq[FileStatus]): (Option[StructType], Option[RelationStatistics]) = {
     val parquetOptions = new ParquetOptions(parameters, sparkSession.sessionState.conf)
 
     // Should we merge schemas from all Parquet part-files?
@@ -238,7 +243,7 @@ class ParquetFileFormat
             .orElse(filesByType.data.headOption)
             .toSeq
       }
-    ParquetFileFormat.mergeSchemasInParallel(filesToTouch, sparkSession)
+    ParquetFileFormat.mergeSchemasInParallel(filesToTouch, sparkSession, shouldMergeSchemas)
   }
 
   case class FileTypes(
@@ -489,7 +494,7 @@ object ParquetFileFormat extends Logging {
           // when it can't read the footer.
           Some(new Footer(currentFile.getPath(),
             ParquetFileReader.readFooter(
-              conf, currentFile, SKIP_ROW_GROUPS)))
+              conf, currentFile, NO_FILTER)))
         } catch { case e: RuntimeException =>
           if (ignoreCorruptFiles) {
             logWarning(s"Skipped the footer in the corrupted file: $currentFile", e)
@@ -517,10 +522,14 @@ object ParquetFileFormat extends Logging {
    *  2. This optimization is mainly useful for S3, where file metadata operations can be pretty
    *     slow.  And basically locality is not available when using S3 (you can't run computation on
    *     S3 nodes).
+   *
+   * @param allFiles whether all the files were passed to the function. This is necessary
+   *                 for stat reading.
    */
   def mergeSchemasInParallel(
       filesToTouch: Seq[FileStatus],
-      sparkSession: SparkSession): Option[StructType] = {
+      sparkSession: SparkSession,
+      allFiles: Boolean = false): (Option[StructType], Option[RelationStatistics]) = {
     val assumeBinaryIsString = sparkSession.sessionState.conf.isParquetBinaryAsString
     val assumeInt96IsTimestamp = sparkSession.sessionState.conf.isParquetINT96AsTimestamp
     val writeTimestampInMillis = sparkSession.sessionState.conf.isParquetINT64AsTimestampMillis
@@ -539,6 +548,8 @@ object ParquetFileFormat extends Logging {
     // footers, here we just extract them (which can be easily serialized), send them to executor
     // side, and resemble fake `FileStatus`es there.
     val partialFileStatusInfo = filesToTouch.map(f => (f.getPath.toString, f.getLen))
+
+
 
     // Set the number of partitions to prevent following schema reads from generating many tasks
     // in case of a small number of parquet files.
@@ -584,15 +595,20 @@ object ParquetFileFormat extends Logging {
                   s"Failed merging schema of file ${footer.getFile}:\n${schema.treeString}", cause)
               }
             }
-            Iterator.single(mergedSchema)
+            val mergedStats = if (allFiles) {
+              ParquetColumnStats.parseStatsFromFooters(footers, mergedSchema)
+            } else {
+              None
+            }
+            Iterator.single((mergedSchema, mergedStats))
           }
         }.collect()
 
     if (partiallyMergedSchemas.isEmpty) {
-      None
+      (None, None)
     } else {
-      var finalSchema = partiallyMergedSchemas.head
-      partiallyMergedSchemas.tail.foreach { schema =>
+      var (finalSchema, _) = partiallyMergedSchemas.head
+      partiallyMergedSchemas.tail.foreach { case (schema, _) =>
         try {
           finalSchema = finalSchema.merge(schema)
         } catch { case cause: SparkException =>
@@ -600,7 +616,8 @@ object ParquetFileFormat extends Logging {
             s"Failed merging schema:\n${schema.treeString}", cause)
         }
       }
-      Some(finalSchema)
+      val stats = ParquetColumnStats.mergeStats(partiallyMergedSchemas.map(_._2), finalSchema)
+      (Some(finalSchema), stats)
     }
   }
 

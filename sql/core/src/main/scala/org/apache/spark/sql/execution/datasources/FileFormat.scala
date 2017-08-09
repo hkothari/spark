@@ -21,12 +21,12 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs._
 import org.apache.hadoop.io.compress.{CompressionCodecFactory, SplittableCompressionCodec}
 import org.apache.hadoop.mapreduce.Job
-
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.GenerateUnsafeProjection
-import org.apache.spark.sql.sources.Filter
+import org.apache.spark.sql.catalyst.plans.logical.Statistics
+import org.apache.spark.sql.sources.{Filter, RelationStatistics}
 import org.apache.spark.sql.types.StructType
 
 
@@ -43,6 +43,12 @@ trait FileFormat {
       sparkSession: SparkSession,
       options: Map[String, String],
       files: Seq[FileStatus]): Option[StructType]
+
+  def inferSchemaWithStatistics(sparkSession: SparkSession,
+                        options: Map[String, String],
+                        files: Seq[FileStatus]): (Option[StructType], Option[RelationStatistics]) = {
+    (inferSchema(sparkSession, options, files), None)
+  }
 
   /**
    * Prepares a write job and returns an [[OutputWriterFactory]].  Client side job preparation can

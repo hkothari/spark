@@ -140,7 +140,7 @@ case class DataSource(
    */
   private def getOrInferFileFormatSchema(
       format: FileFormat,
-      fileStatusCache: FileStatusCache = NoopCache): (StructType, StructType) = {
+      fileStatusCache: FileStatusCache = NoopCache): (StructType, StructType, Option[RelationStatistics]) = {
     // the operations below are expensive therefore try not to do them if we don't need to, e.g.,
     // in streaming mode, we have already inferred and registered partition columns, we will
     // never have to materialize the lazy val below
@@ -191,14 +191,16 @@ case class DataSource(
       }
     }
 
-    val dataSchema = userSpecifiedSchema.map { schema =>
-      StructType(schema.filterNot(f => partitionSchema.exists(p => equality(p.name, f.name))))
-    }.orElse {
-      format.inferSchema(
+    val schemaAndStats = userSpecifiedSchema.map { schema =>
+      (Some(StructType(schema.filterNot(f => partitionSchema.exists(p => equality(p.name, f.name))))), None)
+    }.getOrElse {
+      format.inferSchemaWithStatistics(
         sparkSession,
         caseInsensitiveOptions,
         tempFileIndex.allFiles())
-    }.getOrElse {
+    }
+
+    val dataSchema = schemaAndStats._1.getOrElse {
       throw new AnalysisException(
         s"Unable to infer schema for $format. It must be specified manually.")
     }
@@ -216,7 +218,7 @@ case class DataSource(
       case e: AnalysisException => logWarning(e.getMessage)
     }
 
-    (dataSchema, partitionSchema)
+    (dataSchema, partitionSchema, schemaAndStats._2)
   }
 
   /** Returns the name and schema of the source that can be used to continually read data. */
@@ -253,7 +255,7 @@ case class DataSource(
               "you may be able to create a static DataFrame on that directory with " +
               "'spark.read.load(directory)' and infer schema from it.")
         }
-        val (dataSchema, partitionSchema) = getOrInferFileFormatSchema(format)
+        val (dataSchema, partitionSchema, providedStats) = getOrInferFileFormatSchema(format)
         SourceInfo(
           s"FileSource[$path]",
           StructType(dataSchema ++ partitionSchema),
@@ -357,12 +359,14 @@ case class DataSource(
         } else {
           tempFileCatalog
         }
-        val dataSchema = userSpecifiedSchema.orElse {
-          format.inferSchema(
+        val schemaWithStats = userSpecifiedSchema.map(s => (Some(s), None)).getOrElse {
+          format.inferSchemaWithStatistics(
             sparkSession,
             caseInsensitiveOptions,
             fileCatalog.allFiles())
-        }.getOrElse {
+        }
+
+        val dataSchema = schemaWithStats._1.getOrElse {
           throw new AnalysisException(
             s"Unable to infer schema for $format at ${fileCatalog.allFiles().mkString(",")}. " +
                 "It must be specified manually")
@@ -374,7 +378,8 @@ case class DataSource(
           dataSchema = dataSchema,
           bucketSpec = None,
           format,
-          caseInsensitiveOptions)(sparkSession)
+          caseInsensitiveOptions,
+          schemaWithStats._2)(sparkSession)
 
       // This is a non-streaming file based datasource.
       case (format: FileFormat, _) =>
@@ -384,7 +389,7 @@ case class DataSource(
           DataSource.checkAndGlobPathIfNecessary(hadoopConf, _, checkFilesExist)).toArray
 
         val fileStatusCache = FileStatusCache.getOrCreate(sparkSession)
-        val (dataSchema, partitionSchema) = getOrInferFileFormatSchema(format, fileStatusCache)
+        val (dataSchema, partitionSchema, providedStats) = getOrInferFileFormatSchema(format, fileStatusCache)
 
         val fileCatalog = if (sparkSession.sqlContext.conf.manageFilesourcePartitions &&
             catalogTable.isDefined && catalogTable.get.tracksPartitionsInCatalog) {
@@ -404,7 +409,8 @@ case class DataSource(
           dataSchema = dataSchema.asNullable,
           bucketSpec = bucketSpec,
           format,
-          caseInsensitiveOptions)(sparkSession)
+          caseInsensitiveOptions,
+          providedStats)(sparkSession)
 
       case _ =>
         throw new AnalysisException(
